@@ -337,6 +337,92 @@ function Apply-RoleFieldSwap {
     }
 }
 
+$XsiTypeNs = "http://www.w3.org/2001/XMLSchema-instance"
+
+function Test-IsInstancedCabinHomeLocation {
+    param([string]$HomeLocation)
+
+    if ([string]::IsNullOrWhiteSpace($HomeLocation)) {
+        return $false
+    }
+
+    if ($HomeLocation -eq "FarmHouse") {
+        return $false
+    }
+
+    # Main farmhouse stays "FarmHouse"; cabins use the instanced name "FarmHouse{guid}" in many saves.
+    if ($HomeLocation.StartsWith("FarmHouse") -and $HomeLocation.Length -gt 9) {
+        return $true
+    }
+
+    return $false
+}
+
+function Sync-CabinFarmhandReferences {
+    param([System.Xml.XmlDocument]$SaveDocument)
+
+    $farmerData = Get-Farmers -SaveDocument $SaveDocument
+
+    $uidByCabinHome = @{}
+    foreach ($farmerNode in @($farmerData.PlayerNode) + @($farmerData.FarmhandNodes)) {
+        $home = Get-ElementText -Parent $farmerNode -Name "homeLocation"
+        if (-not (Test-IsInstancedCabinHomeLocation -HomeLocation $home)) {
+            continue
+        }
+
+        $uid = Get-RequiredElementText -Parent $farmerNode -Name "UniqueMultiplayerID" -Context "farmer $(Get-ElementText -Parent $farmerNode -Name 'name')"
+        if ($uidByCabinHome.ContainsKey($home)) {
+            Fail "Duplicate homeLocation '$home' on multiple farmers while syncing cabin mailboxes."
+        }
+
+        $uidByCabinHome[$home] = $uid
+    }
+
+    if ($uidByCabinHome.Count -eq 0) {
+        return 0
+    }
+
+    $updates = 0
+    foreach ($indoorsNode in @($SaveDocument.SelectNodes("//indoors"))) {
+        if (-not ($indoorsNode -is [System.Xml.XmlElement])) {
+            continue
+        }
+
+        $indoorsEl = [System.Xml.XmlElement]$indoorsNode
+        $typeName = $indoorsEl.GetAttribute("type", $XsiTypeNs)
+        if ($typeName -ne "Cabin") {
+            continue
+        }
+
+        $uniqueEl = $indoorsEl.SelectSingleNode("uniqueName")
+        if (-not $uniqueEl) {
+            continue
+        }
+
+        $uniqueName = $uniqueEl.InnerText
+        if ([string]::IsNullOrWhiteSpace($uniqueName)) {
+            continue
+        }
+
+        if (-not $uidByCabinHome.ContainsKey($uniqueName)) {
+            continue
+        }
+
+        $wantUid = $uidByCabinHome[$uniqueName]
+        $refEl = $indoorsEl.SelectSingleNode("farmhandReference")
+        if (-not $refEl) {
+            continue
+        }
+
+        if ($refEl.InnerText -ne $wantUid) {
+            $refEl.InnerText = $wantUid
+            $updates++
+        }
+    }
+
+    return $updates
+}
+
 function Sync-SaveGameInfo {
     param(
         [System.Xml.XmlDocument]$InfoDocument,
@@ -554,9 +640,12 @@ function Invoke-HostSwap {
 
     Sync-SaveGameInfo -InfoDocument $InfoDocument -PlayerNode $newPlayerNode
 
+    $cabinMailboxUpdates = Sync-CabinFarmhandReferences -SaveDocument $SaveDocument
+
     return [pscustomobject]@{
         OldHostName = $oldHostName
         NewHostName = $TargetFarmhandName
+        CabinMailboxFieldsUpdated = $cabinMailboxUpdates
     }
 }
 
@@ -618,6 +707,7 @@ try {
     Write-Host "Host swap completed." -ForegroundColor Green
     Write-Host "  - Old host: $($swapResult.OldHostName)"
     Write-Host "  - New host: $($swapResult.NewHostName)"
+    Write-Host "  - Cabin mailbox fields updated: $($swapResult.CabinMailboxFieldsUpdated)"
     Write-Host "  - Main save: $($fileSet.MainSavePath)"
     Write-Host "  - SaveGameInfo: $($fileSet.SaveGameInfoPath)"
     Write-Host ""

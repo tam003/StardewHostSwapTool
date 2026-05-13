@@ -220,7 +220,7 @@ export default function App() {
         <div className="heroCopy">
           <p className="eyebrow">Stardew host swap</p>
           <h1>Promote host, keep save intact.</h1>
-          <p className="lede">Load folder, pick farmhand, export one zip.</p>
+          <p className="lede">Load folder, pick farmhand, export one zip. Cabin mailbox owners sync after swap.</p>
         </div>
       </header>
 
